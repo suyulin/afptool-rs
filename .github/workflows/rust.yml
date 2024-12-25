@@ -1,37 +1,111 @@
-name: Rust Build
+name: Release
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  create-release:
+    name: Create Release
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      - name: Set up Rust
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "Creating release for ${{ github.ref }}"
+
+  build-release:
+    name: Build Release
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: apftool
+            asset_name: apftool-linux-x86_64
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: apftool
+            asset_name: apftool-linux-arm64
+
+          # macOS builds
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: apftool
+            asset_name: apftool-macos-x86_64
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: apftool
+            asset_name: apftool-macos-arm64
+
+          # Windows builds
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: apftool.exe
+            asset_name: apftool-windows-x86_64.exe
+
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: apftool.exe
+            asset_name: apftool-windows-arm64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: ${{ matrix.target }}
           override: true
 
-      - name: Build for ARM64
-        run: cargo build --release --target=aarch64-apple-darwin
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build for x86
-        run: cargo build --release --target=x86_64-apple-darwin
-
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v2
+      - name: Build release
+        uses: actions-rs/cargo@v1
         with:
-          name: binaries
-          path: |
-            target/aarch64-apple-darwin/release/ # ARM64 binary
-            target/x86_64-apple-darwin/release/ # x86 binary
+          use-cross: ${{ matrix.target != matrix.os }}
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./${{ matrix.asset_name }}
+          asset_name: ${{ matrix.asset_name }}
+          asset_content_type: application/octet-stream
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "Release published successfully"
