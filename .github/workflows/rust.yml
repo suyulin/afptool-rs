@@ -30,34 +30,34 @@ jobs:
           # Linux builds
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: apftool
+            artifact_name: apftool-rs
             asset_name: apftool-linux-x86_64
 
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact_name: apftool
+            artifact_name: apftool-rs
             asset_name: apftool-linux-arm64
 
           # macOS builds
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: apftool
+            artifact_name: apftool-rs
             asset_name: apftool-macos-x86_64
 
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: apftool
+            artifact_name: apftool-rs
             asset_name: apftool-macos-arm64
 
           # Windows builds
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: apftool.exe
+            artifact_name: apftool-rs.exe
             asset_name: apftool-windows-x86_64.exe
 
           - os: windows-latest
             target: aarch64-pc-windows-msvc
-            artifact_name: apftool.exe
+            artifact_name: apftool-rs.exe
             asset_name: apftool-windows-arm64.exe
 
     runs-on: ${{ matrix.os }}
