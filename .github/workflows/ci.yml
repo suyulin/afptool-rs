@@ -44,7 +44,6 @@ jobs:
         run: cargo test --verbose
 
       - name: Package binary (only for release builds)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
           mkdir -p dist
           if [[ "${{ runner.os }}" == "Windows" ]]; then
@@ -54,7 +53,6 @@ jobs:
           fi
 
       - name: Upload Release Artifacts
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v3
         with:
           name: afptool-rs-${{ matrix.os }}
