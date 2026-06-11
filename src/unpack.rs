@@ -147,6 +147,21 @@ fn extract_file(fp: &mut File, offset: u64, len: u64, full_path: &str) -> Result
     Ok(())
 }
 
+// Returns (data_offset, data_len) for the partition content, stripping the PARM
+// wrapper (4-byte magic + 4-byte content length + content + 4-byte CRC) for
+// partitions named "parameter", matching the behaviour of the reference rkafpack.c.
+fn parm_content_range(name: &str, fp: &mut File, offset: u64, len: u64) -> Result<(u64, u64)> {
+    const PARM_OVERHEAD: u64 = 12; // 4 magic + 4 length + 4 CRC
+    if name != "parameter" || len < PARM_OVERHEAD {
+        return Ok((offset, len));
+    }
+    let mut header = [0u8; 8];
+    fp.seek(std::io::SeekFrom::Start(offset))?;
+    fp.read_exact(&mut header)?;
+    let content_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as u64;
+    Ok((offset + 8, content_len))
+}
+
 fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
     use std::mem;
 
@@ -214,12 +229,13 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
             }
 
             let file_to_extract = format!("{}/{}", dst_path, part_full_path);
-            extract_file(
+            let (data_offset, data_len) = parm_content_range(
+                &part_name,
                 &mut fp,
                 part.part_offset as u64,
                 part.part_byte_count as u64,
-                &file_to_extract,
             )?;
+            extract_file(&mut fp, data_offset, data_len, &file_to_extract)?;
         }
     }
 

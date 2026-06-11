@@ -376,11 +376,25 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         } else {
             // Load file for first time
             let file_path = format!("{}/{}", input_dir, path);
-            let mut file_data = Vec::new();
+            let mut raw_data = Vec::new();
 
             File::open(&file_path)
                 .map_err(|e| anyhow!("Cannot open {}: {}", file_path, e))?
-                .read_to_end(&mut file_data)?;
+                .read_to_end(&mut raw_data)?;
+
+            // "parameter" partitions are stored PARM-wrapped in the image
+            let file_data = if name == "parameter" {
+                let content_len = raw_data.len() as u32;
+                let mut wrapped = Vec::with_capacity(raw_data.len() + 12);
+                wrapped.extend_from_slice(b"PARM");
+                wrapped.extend_from_slice(&content_len.to_le_bytes());
+                wrapped.extend_from_slice(&raw_data);
+                let crc = rkcrc32(0, &raw_data);
+                wrapped.extend_from_slice(&crc.to_le_bytes());
+                wrapped
+            } else {
+                raw_data
+            };
 
             let file_size = file_data.len() as u32;
             let padded_size = ((file_size + sector_size as u32 - 1) / sector_size as u32) * sector_size as u32;
