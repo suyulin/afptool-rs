@@ -133,9 +133,10 @@ mod advanced_tests {
         
         // 运行命令
         let mut cmd = Command::cargo_bin("afptool-rs")?;
-        cmd.arg(input_file.to_str().unwrap())
+        cmd.arg("unpack")
+           .arg(input_file.to_str().unwrap())
            .arg(output_dir.to_str().unwrap());
-        
+
         cmd.assert()
            .success()
            .stdout(predicate::str::contains("RKFW signature detected"))
@@ -163,9 +164,10 @@ mod advanced_tests {
         
         // 运行命令
         let mut cmd = Command::cargo_bin("afptool-rs")?;
-        cmd.arg(input_file.to_str().unwrap())
+        cmd.arg("unpack")
+           .arg(input_file.to_str().unwrap())
            .arg(output_dir.to_str().unwrap());
-        
+
         // 执行命令并检查输出
         cmd.assert()
            .success()
@@ -192,9 +194,10 @@ mod advanced_tests {
         
         // 运行命令
         let mut cmd = Command::cargo_bin("afptool-rs").unwrap();
-        cmd.arg(input_file.to_str().unwrap())
+        cmd.arg("unpack")
+           .arg(input_file.to_str().unwrap())
            .arg(output_dir.to_str().unwrap());
-        
+
         // 应该失败并输出错误信息
         cmd.assert()
            .failure()

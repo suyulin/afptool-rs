@@ -2,8 +2,21 @@ use std::mem;
 mod pack;
 mod unpack;
 
-pub use pack::{pack_rkfw, pack_rkaf, chip_name_to_code};
-pub use unpack::unpack_file;
+pub use pack::{pack_rkfw, pack_rkaf, chip_name_to_code, encode_chip_field};
+pub use unpack::{unpack_file, decode_chip_field};
+
+/// Recover a true (possibly >4 GiB) length from an on-disk u32 field that
+/// only stores the low 32 bits. `available` is an upper bound derived from
+/// the actual file layout (e.g. distance to the next partition or to the end
+/// of the container); the true length is the largest value congruent to
+/// `stored` modulo 2^32 that still fits within it.
+pub fn recover_true_size(stored: u32, available: u64) -> u64 {
+    let stored = stored as u64;
+    if available <= stored {
+        return stored;
+    }
+    stored + (((available - stored) >> 32) << 32)
+}
 
 pub const RKAFP_MAGIC: &str = "RKAF";
 pub const PARM_MAGIC: &str = "PARM";
@@ -35,7 +48,7 @@ pub struct UpdateHeader {
     pub magic: [u8; 4],
     pub length: u32,
     pub model: [u8; MAX_MODEL_LEN],
-    id: [u8; MAX_ID_LEN],
+    pub id: [u8; MAX_ID_LEN],
     pub manufacturer: [u8; MAX_MANUFACTURER_LEN],
     pub unknown1: u32,
     pub version: u32,

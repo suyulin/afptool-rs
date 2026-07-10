@@ -97,17 +97,27 @@ additional setup is required beyond ensuring the output directory is writable.
 
 **Pack RKFW firmware:**
 ```bash
-afptool-rs pack-rkfw <input_directory> <output_file> --chip <chip> --version <version> --timestamp <unix_timestamp> --code <code_field_hex> 
+afptool-rs pack-rkfw <input_directory> <output_file> [--chip <chip>] [--version <version>] [--timestamp <unix_timestamp>] [--code <code_field_hex>]
 ```
 
-Example:
+When the input directory contains an `rkfw-header.bin` (saved automatically by
+`unpack`), the original header is used as a template and all flags become
+optional overrides — repacking unchanged content reproduces the original image
+byte-for-byte. Without a template, all four flags are required.
+
+Example (repacking an unpacked image — flags come from the saved header):
+```bash
+$ afptool-rs pack-rkfw ./out ./repacked.img
+```
+
+Example (building from scratch):
 ```bash
 $ afptool-rs pack-rkfw ./out ./repacked.img --chip RK3562 --version 1.0.0 --timestamp 1762435994 --code 0x02000000
 Successfully packed RKFW image:
   Output: ./repacked.img
   Version: 1.0.0
   Date: 2025-11-06 13:33:14
-  Chip: RK3562 (code: 0x32)
+  Chip: RK3562
   BOOT size: 469440 bytes
   Update image size: 272773124 bytes
   MD5: 9574d7cdf6f6a45bfaaad62f171fd185
@@ -118,6 +128,11 @@ Successfully packed RKFW image:
 ```bash
 afptool-rs pack-rkaf <input_directory> <output_file> --model <model> --manufacturer <manufacturer>
 ```
+
+When the input directory contains an `rkaf-header.bin` (saved automatically by
+`unpack`), it is used as a header template so vendor-specific header bytes
+survive the round-trip. Entries whose path is `RESERVED` are listed in
+`package-file` but get no header entry, matching the official tool's behavior.
 
 Example:
 ```bash

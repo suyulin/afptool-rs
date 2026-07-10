@@ -7,13 +7,12 @@ use crate::{RKAF_SIGNATURE, RKFW_SIGNATURE, UpdateHeader, RKAFP_MAGIC};
 
 pub fn unpack_file(file_path: &str, dst_path: &str) -> Result<()> {
     let mut file = File::open(file_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    let mut signature = [0u8; 4];
+    file.read_exact(&mut signature)?;
 
-    let signature = &buffer[0..4];
-    match signature {
+    match &signature[..] {
         RKAF_SIGNATURE => unpack_rkafp(file_path, dst_path)?,
-        RKFW_SIGNATURE => unpack_rkfw(&buffer, dst_path)?,
+        RKFW_SIGNATURE => unpack_rkfw(file_path, dst_path)?,
         _ => {
             return Err(anyhow!("Unknown signature: {:?}", signature));
         }
@@ -21,7 +20,27 @@ pub fn unpack_file(file_path: &str, dst_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn unpack_rkfw(buf: &[u8], dst_path: &str) -> Result<()> {
+/// Decode the modern chip identity field at RKFW offsets 0x15..0x19: the four
+/// ASCII digits of the chip number stored last-digit-first (a vendor RK3588
+/// image carries '8' '8' '5' '3'). Returns None for legacy one-byte
+/// family-code encodings, which are resolved via the family table instead.
+pub fn decode_chip_field(field: &[u8; 4]) -> Option<String> {
+    if field.iter().all(|b| b.is_ascii_digit()) {
+        let digits: String = field.iter().rev().map(|&b| b as char).collect();
+        Some(format!("RK{}", digits))
+    } else {
+        None
+    }
+}
+
+fn unpack_rkfw(file_path: &str, dst_path: &str) -> Result<()> {
+    const HEADER_SIZE: usize = 0x66;
+
+    let mut fp = File::open(file_path)?;
+    let filesize = fp.metadata()?.len();
+    let mut buf = [0u8; HEADER_SIZE];
+    fp.read_exact(&mut buf)?;
+
     let mut chip: Option<&str> = None;
 
     println!("RKFW signature detected");
@@ -44,49 +63,63 @@ fn unpack_rkfw(buf: &[u8], dst_path: &str) -> Result<()> {
     let minute = buf[0x13];
     let second = buf[0x14];
 
-    let date = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32)
-        .ok_or_else(|| anyhow!("Invalid date"))?;
-    let time = chrono::NaiveTime::from_hms_opt(hour as u32, minute as u32, second as u32)
-        .ok_or_else(|| anyhow!("Invalid time"))?;
-    let dt = NaiveDateTime::new(date, time);
-    let unix_timestamp = dt.and_utc().timestamp();
-
-    println!(
-        "date: {}-{:02}-{:02} {:02}:{:02}:{:02} (Unix timestamp: {})",
-        year, month, day, hour, minute, second, unix_timestamp
-    );
-
-    match buf[0x15] {
-        0x19 => chip = Some("RV1109/RV1126"),
-        0x30 => chip = Some("PX30/RK3326"),
-        0x32 => chip = Some("RK3562"),
-        0x33 => chip = Some("RK3399/RK3399Pro"),
-        0x35 => chip = Some("RK3588/RK3588S"),
-        0x36 => chip = Some("RK3326"),
-        0x38 => chip = Some("RK3566/RK3568"),
-        0x39 => chip = Some("RK3528"),
-        0x41 => chip = Some("RK3368"),
-        0x48 => chip = Some("RK3308"),
-        0x50 => chip = Some("RK29xx"),
-        0x51 => chip = Some("RV1108"),
-        0x60 => chip = Some("RK30xx/RK3066"),
-        0x70 => chip = Some("RK31xx/RK3188"),
-        0x80 => chip = Some("RK32xx/RK3288"),
+    // The date is informational only; a malformed field must not stop extraction.
+    let date = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32);
+    let time = chrono::NaiveTime::from_hms_opt(hour as u32, minute as u32, second as u32);
+    match (date, time) {
+        (Some(date), Some(time)) => {
+            let unix_timestamp = NaiveDateTime::new(date, time).and_utc().timestamp();
+            println!(
+                "date: {}-{:02}-{:02} {:02}:{:02}:{:02} (Unix timestamp: {})",
+                year, month, day, hour, minute, second, unix_timestamp
+            );
+        }
         _ => println!(
-            "You got a brand new chip ({:#x}), congratulations!!!",
-            buf[0x15]
+            "date: {}-{:02}-{:02} {:02}:{:02}:{:02} (invalid)",
+            year, month, day, hour, minute, second
         ),
     }
 
-    let chip_name = chip.unwrap_or("unknown");
+    // Modern images carry the chip number as four ASCII digits; legacy images
+    // carry a one-byte family code at 0x15.
+    let chip_field: [u8; 4] = buf[0x15..0x19].try_into().unwrap();
+    let decoded_chip = decode_chip_field(&chip_field);
+
+    if decoded_chip.is_none() {
+        match buf[0x15] {
+            0x19 => chip = Some("RV1109/RV1126"),
+            0x30 => chip = Some("PX30/RK3326"),
+            0x32 => chip = Some("RK3562"),
+            0x33 => chip = Some("RK3399/RK3399Pro"),
+            0x35 => chip = Some("RK3588/RK3588S"),
+            0x36 => chip = Some("RK3326"),
+            0x38 => chip = Some("RK3566/RK3568"),
+            0x39 => chip = Some("RK3528"),
+            0x41 => chip = Some("RK3368"),
+            0x48 => chip = Some("RK3308"),
+            0x50 => chip = Some("RK29xx"),
+            0x51 => chip = Some("RV1108"),
+            0x60 => chip = Some("RK30xx/RK3066"),
+            0x70 => chip = Some("RK31xx/RK3188"),
+            0x80 => chip = Some("RK32xx/RK3288"),
+            _ => println!(
+                "You got a brand new chip ({:#x}), congratulations!!!",
+                buf[0x15]
+            ),
+        }
+    }
+
+    let chip_name = decoded_chip.as_deref().or(chip).unwrap_or("unknown");
     println!("family: {}", chip_name);
 
-    let ioff = get_u32_le(&buf[0x19..]);
-    let isize: u32 = get_u32_le(&buf[0x1d..]);
+    std::fs::create_dir_all(dst_path)?;
 
-    // if &buf[ioff as usize..ioff as usize + 4] != b"BOOT" {
-    //     panic!("cannot find BOOT signature");
-    // }
+    // Keep the original header so pack-rkfw can use it as a template and
+    // preserve fields that are otherwise lost (timestamp, code, unknown bytes).
+    write_file(&Path::new(&format!("{}/rkfw-header.bin", dst_path)), &buf)?;
+
+    let ioff = get_u32_le(&buf[0x19..]) as u64;
+    let isize = get_u32_le(&buf[0x1d..]) as u64;
 
     println!(
         "{:08x}-{:08x} {:26} (size: {})",
@@ -95,17 +128,36 @@ fn unpack_rkfw(buf: &[u8], dst_path: &str) -> Result<()> {
         "BOOT",
         isize
     );
-    std::fs::create_dir_all(dst_path)?;
-    write_file(
-        &Path::new(&format!("{}/BOOT", dst_path)),
-        &buf[ioff as usize..ioff as usize + (isize as usize)],
-    )?;
+    extract_file(&mut fp, ioff, isize, &format!("{}/BOOT", dst_path))?;
 
-    let ioff = get_u32_le(&buf[0x21..]);
-    let isize = get_u32_le(&buf[0x25..]);
+    let ioff = get_u32_le(&buf[0x21..]) as u64;
+    let stored_size = get_u32_le(&buf[0x25..]);
 
-    if &buf[ioff as usize..ioff as usize + 4] != b"RKAF" {
-        panic!("cannot find embedded RKAF update.img");
+    let mut magic = [0u8; 4];
+    fp.seek(std::io::SeekFrom::Start(ioff))?;
+    fp.read_exact(&mut magic)?;
+    if &magic != b"RKAF" {
+        return Err(anyhow!("cannot find embedded RKAF update.img"));
+    }
+
+    // The size field only holds the low 32 bits for >4 GiB updates, so derive
+    // the true size from the file layout: everything between the update offset
+    // and the trailing 32-char ASCII MD5 belongs to the update image.
+    let mut data_end = filesize;
+    if filesize >= ioff + 32 {
+        let mut tail = [0u8; 32];
+        fp.seek(std::io::SeekFrom::End(-32))?;
+        fp.read_exact(&mut tail)?;
+        if tail.iter().all(u8::is_ascii_hexdigit) {
+            data_end = filesize - 32;
+        }
+    }
+    let isize = crate::recover_true_size(stored_size, data_end.saturating_sub(ioff));
+    if isize != stored_size as u64 {
+        println!(
+            "note: header size field is 0x{:08x}; recovered true update size {} bytes (>4 GiB, field wrapped)",
+            stored_size, isize
+        );
     }
 
     println!(
@@ -115,16 +167,13 @@ fn unpack_rkfw(buf: &[u8], dst_path: &str) -> Result<()> {
         "embedded-update.img",
         isize
     );
-    write_file(
-        &Path::new(&format!("{}/embedded-update.img", dst_path)),
-        &buf[ioff as usize..ioff as usize + isize as usize],
-    )?;
+    extract_file(&mut fp, ioff, isize, &format!("{}/embedded-update.img", dst_path))?;
     Ok(())
 }
 
 fn extract_file(fp: &mut File, offset: u64, len: u64, full_path: &str) -> Result<()> {
     println!("{:08x}-{:08x} {}", offset, len, full_path);
-    let mut buffer = vec![0u8; 16 * 1024];
+    let mut buffer = vec![0u8; 4 * 1024 * 1024];
     let mut fp_out = File::create(full_path)?;
 
     fp.seek(std::io::SeekFrom::Start(offset))?;
@@ -168,7 +217,7 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
     let mut fp = File::open(file_path)?;
     let mut buf = vec![0u8; mem::size_of::<UpdateHeader>()];
     fp.read_exact(&mut buf)?;
-    let header = UpdateHeader::from_bytes(buf.as_mut());
+    let header = UpdateHeader::from_bytes(&buf);
     let magic_str = std::str::from_utf8(&header.magic)?;
     if magic_str != RKAFP_MAGIC {
         return Err(anyhow!("Invalid header magic id"));
@@ -176,9 +225,34 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
 
     let filesize = fp.metadata()?.len();
     println!("Filesize: {}", filesize);
-    if filesize - 4 != header.length as u64 {
-        eprintln!("update_header.length cannot be correct, cannot check CRC");
+
+    if header.num_parts as usize > crate::MAX_PARTS {
+        return Err(anyhow!(
+            "Corrupt header: {} partitions (maximum is {})",
+            header.num_parts as u32,
+            crate::MAX_PARTS
+        ));
     }
+
+    // The length field only stores the low 32 bits, so compare modulo 2^32.
+    let container_end = filesize.saturating_sub(4); // trailing CRC
+    if (container_end as u32) != header.length {
+        eprintln!("update_header.length cannot be correct, cannot check CRC");
+    } else if container_end > u32::MAX as u64 {
+        println!(
+            "note: container is {} bytes (>4 GiB); header length field holds the low 32 bits",
+            container_end
+        );
+    }
+
+    // Offsets of all data-bearing partitions, used to bound each partition's
+    // true size when its 32-bit byte count has wrapped.
+    let mut data_offsets: Vec<u64> = (0..header.num_parts as usize)
+        .map(|i| header.parts[i].part_offset as u64)
+        .filter(|&off| off > 0)
+        .collect();
+    data_offsets.sort_unstable();
+    data_offsets.dedup();
     std::fs::create_dir_all(format!("{}/Image", dst_path))?;
     // 安全地从null-terminated字符串中提取文本
     let manufacturer = std::ffi::CStr::from_bytes_until_nul(&header.manufacturer)
@@ -190,6 +264,11 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
 
     println!("manufacturer: {}", manufacturer);
     println!("model: {}", model);
+
+    // Keep the original header so pack-rkaf can use it as a template and
+    // preserve undocumented bytes (the vendor tool leaves data in the tails
+    // of string fields).
+    write_file(&Path::new(&format!("{}/rkaf-header.bin", dst_path)), &buf)?;
 
     // Save partition metadata for repacking
     let metadata_path = format!("{}/partition-metadata.txt", dst_path);
@@ -229,12 +308,29 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
             }
 
             let file_to_extract = format!("{}/{}", dst_path, part_full_path);
-            let (data_offset, data_len) = parm_content_range(
-                &part_name,
-                &mut fp,
-                part.part_offset as u64,
-                part.part_byte_count as u64,
-            )?;
+
+            // part_byte_count only stores the low 32 bits; recover the true
+            // size using the next partition's offset (or the container end)
+            // as an upper bound.
+            let offset = part.part_offset as u64;
+            let bound = data_offsets
+                .iter()
+                .find(|&&o| o > offset)
+                .copied()
+                .unwrap_or(container_end);
+            let true_count = crate::recover_true_size(
+                part.part_byte_count,
+                bound.saturating_sub(offset),
+            );
+            if true_count != part.part_byte_count as u64 {
+                println!(
+                    "note: partition '{}' byte count field is 0x{:08x}; recovered true size {} bytes (>4 GiB, field wrapped)",
+                    part_name, part_byte_count, true_count
+                );
+            }
+
+            let (data_offset, data_len) =
+                parm_content_range(&part_name, &mut fp, offset, true_count)?;
             extract_file(&mut fp, data_offset, data_len, &file_to_extract)?;
         }
     }

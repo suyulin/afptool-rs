@@ -112,7 +112,7 @@ mod integration_tests {
         
         // 运行命令
         let mut cmd = Command::cargo_bin("afptool-rs")?;
-        cmd.arg(&input_path).arg(&output_dir);
+        cmd.arg("unpack").arg(&input_path).arg(&output_dir);
         
         // 执行命令并检查输出
         cmd.assert()
