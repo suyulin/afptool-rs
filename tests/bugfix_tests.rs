@@ -336,6 +336,35 @@ mod tests {
         assert_eq!(&img[140 + 112..140 + 112 + 9], b"userdata\0");
     }
 
+    /// padded_size is stored in 2048-byte sectors and encodes the TRUE
+    /// partition length (the vendor's 4.5 GiB userdata carries 0x240000
+    /// sectors while part_byte_count wraps). It must be computed from the
+    /// actual file being packed — not copied from partition-metadata.txt,
+    /// which goes stale the moment a partition is swapped for one of a
+    /// different size.
+    #[test]
+    fn rkaf_padded_size_computed_from_actual_file_not_stale_metadata() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path();
+        // 5000 bytes -> ceil(5000/2048) = 3 sectors
+        fs::write(input.join("userdata.img"), vec![0xAAu8; 5000]).unwrap();
+        fs::write(input.join("package-file"), "userdata userdata.img\n").unwrap();
+        // metadata claims 1 sector (stale: recorded when the partition was smaller)
+        fs::write(
+            input.join("partition-metadata.txt"),
+            "userdata,userdata.img,0xffffffff,0x00a98000,0x00000800,0x00000001,0x00000400\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("out.rkaf");
+        pack_rkaf(input.to_str().unwrap(), out.to_str().unwrap(), "RK3588", "RK3588").unwrap();
+
+        let img = fs::read(&out).unwrap();
+        // part 0 numeric fields start at 140 + 92; padded_size is the 4th u32
+        let padded = u32::from_le_bytes(img[140 + 92 + 12..140 + 92 + 16].try_into().unwrap());
+        assert_eq!(padded, 3, "padded_size must reflect the actual file (3 sectors), not stale metadata");
+    }
+
     // ---------------- Bug 2 end-to-end: 5 GiB member round-trip ----------------
     // Expensive (~11 GB of temp disk I/O); run with: cargo test -- --ignored
 

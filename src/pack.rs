@@ -9,7 +9,6 @@ use crate::{UpdateHeader, RKFW_SIGNATURE, RKAF_SIGNATURE};
 struct PartitionMetadata {
     flash_size: u32,
     flash_offset: u32,
-    padded_size: u32,
 }
 
 // RockChip CRC-32 table
@@ -111,12 +110,10 @@ fn parse_partition_metadata(input_dir: &str) -> Result<HashMap<String, Partition
             let name = parts[0].to_string();
             let flash_size = u32::from_str_radix(parts[2].trim_start_matches("0x"), 16)?;
             let flash_offset = u32::from_str_radix(parts[3].trim_start_matches("0x"), 16)?;
-            let padded_size = u32::from_str_radix(parts[5].trim_start_matches("0x"), 16)?;
 
             metadata_map.insert(name, PartitionMetadata {
                 flash_size,
                 flash_offset,
-                padded_size,
             });
         }
     }
@@ -528,14 +525,19 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         if let Some(meta) = partition_metadata.get(name) {
             part.flash_size = meta.flash_size;
             part.flash_offset = meta.flash_offset;
-            part.padded_size = meta.padded_size;
         } else {
             // Instead of returning an error, assume it's a special partition
             // with no data and use default values.
             part.flash_size = 0;
             part.flash_offset = 0;
-            part.padded_size = 0;
         }
+
+        // padded_size is in 2048-byte sectors and encodes the TRUE length
+        // (the vendor's 4.5 GiB userdata stores 0x240000 sectors while
+        // part_byte_count wraps at 4 GiB). Compute it from the file actually
+        // being packed — metadata from a previous unpack goes stale as soon
+        // as a partition is swapped for one of a different size.
+        part.padded_size = file_size.div_ceil(sector_size) as u32;
 
         // Data offsets beyond 4 GiB have no verified on-disk encoding; refuse
         // rather than wrap silently. Place oversized partitions last.
