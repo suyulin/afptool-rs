@@ -64,8 +64,8 @@ pub struct ParamHeader {
     length: u32,
 }
 
-impl UpdateHeader {
-    pub fn default() -> Self {
+impl Default for UpdateHeader {
+    fn default() -> Self {
         Self {
             magic: [0u8; 4],
             length: 0,
@@ -79,9 +79,11 @@ impl UpdateHeader {
             reserved: [0u8; 116],
         }
     }
+}
 
+impl UpdateHeader {
     pub fn from_bytes(bytes: &[u8]) -> &UpdateHeader {
-        unsafe { mem::transmute(bytes.as_ptr()) }
+        unsafe { &*(bytes.as_ptr() as *const UpdateHeader) }
     }
 
     pub fn to_bytes(&self) -> &[u8] {
@@ -89,8 +91,8 @@ impl UpdateHeader {
     }
 }
 
-impl UpdatePart {
-    pub fn default() -> Self {
+impl Default for UpdatePart {
+    fn default() -> Self {
         Self {
             name: [0u8; MAX_NAME_LEN],
             full_path: [0u8; MAX_FULL_PATH_LEN],
@@ -129,6 +131,11 @@ macro_rules! fatal {
     };
 }
 
+/// # Safety
+///
+/// The returned slice exposes the raw bytes of `p`, including any padding
+/// bytes, which may be uninitialized. Only call this on `#[repr(C, packed)]`
+/// types with no padding (such as the header structs in this crate).
 pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
     core::slice::from_raw_parts(
         (p as *const T) as *const u8,

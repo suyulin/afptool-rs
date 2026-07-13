@@ -238,7 +238,7 @@ mod tests {
         // partition-metadata.txt provides flash_size/flash_offset/padded_size;
         // part_byte_count in metadata is not used by pack (recomputed from file)
         let wrapped_size = content.len() as u32 + 12;
-        let padded = ((wrapped_size + 2047) / 2048) * 2048;
+        let padded = wrapped_size.div_ceil(2048) * 2048;
         fs::write(
             input_dir.join("partition-metadata.txt"),
             format!("parameter,parameter.txt,{:#010x},{:#010x},{:#010x},{:#010x},{:#010x}\n",

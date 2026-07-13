@@ -116,7 +116,7 @@ fn unpack_rkfw(file_path: &str, dst_path: &str) -> Result<()> {
 
     // Keep the original header so pack-rkfw can use it as a template and
     // preserve fields that are otherwise lost (timestamp, code, unknown bytes).
-    write_file(&Path::new(&format!("{}/rkfw-header.bin", dst_path)), &buf)?;
+    write_file(Path::new(&format!("{}/rkfw-header.bin", dst_path)), &buf)?;
 
     let ioff = get_u32_le(&buf[0x19..]) as u64;
     let isize = get_u32_le(&buf[0x1d..]) as u64;
@@ -268,7 +268,7 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
     // Keep the original header so pack-rkaf can use it as a template and
     // preserve undocumented bytes (the vendor tool leaves data in the tails
     // of string fields).
-    write_file(&Path::new(&format!("{}/rkaf-header.bin", dst_path)), &buf)?;
+    write_file(Path::new(&format!("{}/rkaf-header.bin", dst_path)), &buf)?;
 
     // Save partition metadata for repacking
     let metadata_path = format!("{}/partition-metadata.txt", dst_path);
@@ -295,7 +295,7 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
                 metadata_file,
                 "{},{},{:#010x},{:#010x},{:#010x},{:#010x},{:#010x}",
                 part_name,
-                &part_full_path,
+                part_full_path,
                 flash_size,
                 flash_offset,
                 part_offset,
