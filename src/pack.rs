@@ -404,12 +404,10 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
     let mut machine_id = String::new();
     if let Ok(param_file) = File::open(format!("{}/parameter.txt", input_dir)) {
         let reader = BufReader::new(param_file);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if line.starts_with("MACHINE_ID:") {
-                    machine_id = line.split(':').nth(1).unwrap_or("").trim().to_string();
-                    break;
-                }
+        for line in reader.lines().map_while(Result::ok) {
+            if line.starts_with("MACHINE_ID:") {
+                machine_id = line.split(':').nth(1).unwrap_or("").trim().to_string();
+                break;
             }
         }
     }
@@ -422,11 +420,10 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         Ok(data) if data.len() >= std::mem::size_of::<UpdateHeader>() => {
             *UpdateHeader::from_bytes(&data)
         }
-        _ => {
-            let mut fresh = UpdateHeader::default();
-            fresh.version = 0x01000000;
-            fresh
-        }
+        _ => UpdateHeader {
+            version: 0x01000000,
+            ..Default::default()
+        },
     };
     header.magic.copy_from_slice(RKAF_SIGNATURE);
 
@@ -446,6 +443,11 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
 
     if !machine_id.is_empty() {
         write_cstr_preserving_tail(&mut header.id, &format!(" {}", machine_id));
+    } else {
+        // No MACHINE_ID in parameter.txt: clear the logical id so a template
+        // value cannot leak through. Bytes after the NUL are left untouched
+        // for vendor-tail fidelity; readers stop at the first NUL.
+        header.id[0] = 0;
     }
 
     let partition_metadata = parse_partition_metadata(input_dir)?;

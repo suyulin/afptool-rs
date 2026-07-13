@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn chip_field_decode() {
-        assert_eq!(decode_chip_field(&[b'8', b'8', b'5', b'3']), Some("RK3588".to_string()));
+        assert_eq!(decode_chip_field(b"8853"), Some("RK3588".to_string()));
         assert_eq!(decode_chip_field(&[0x32, b'6', b'5', b'3']), Some("RK3562".to_string()));
         // Legacy family byte with zero padding is not an ASCII-digit field
         assert_eq!(decode_chip_field(&[0x30, 0, 0, 0]), None);
@@ -95,7 +95,7 @@ mod tests {
         h[0x13] = 4;
         h[0x14] = 41;
         // chip RK3588 as ASCII digits reversed
-        h[0x15..0x19].copy_from_slice(&[b'8', b'8', b'5', b'3']);
+        h[0x15..0x19].copy_from_slice(b"8853");
         // BOOT offset/size
         h[0x19..0x1d].copy_from_slice(&(0x66u32).to_le_bytes());
         h[0x1d..0x21].copy_from_slice(&(boot.len() as u32).to_le_bytes());
@@ -142,7 +142,7 @@ mod tests {
         let img = fs::read(&out).unwrap();
         assert_eq!(
             &img[0x15..0x19],
-            &[b'8', b'8', b'5', b'3'],
+            b"8853",
             "chip field must be the four ASCII digits reversed (reads back as 3588)"
         );
     }
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(rebuilt[6], 4, "build overridden");
         // untouched template fields survive
         assert_eq!(&rebuilt[0x36..0x39], &[0x48, 0x49, 0x01]);
-        assert_eq!(&rebuilt[0x15..0x19], &[b'8', b'8', b'5', b'3']);
+        assert_eq!(&rebuilt[0x15..0x19], b"8853");
     }
 
     #[test]
@@ -334,6 +334,58 @@ mod tests {
         // sanity: the real strings are still intact and NUL-terminated
         assert_eq!(&img[8..16], b" RK3588\0");
         assert_eq!(&img[140 + 112..140 + 112 + 9], b"userdata\0");
+    }
+
+    /// When packing from a saved header template, a MACHINE_ID that has been
+    /// removed from parameter.txt must not leak through from the template:
+    /// the logical id is cleared (NUL first byte) while tail bytes may remain.
+    #[test]
+    fn rkaf_template_id_cleared_when_machine_id_removed() {
+        const ID_OFFSET: usize = 4 + 4 + 34; // magic + length + model
+
+        let dir = TempDir::new().unwrap();
+        let input = dir.path().join("in");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("parameter.txt"), b"MACHINE_ID: 007\nCMDLINE:x\n").unwrap();
+        fs::write(input.join("userdata.img"), vec![0xAAu8; 100]).unwrap();
+        fs::write(
+            input.join("package-file"),
+            "parameter parameter.txt\nuserdata userdata.img\n",
+        )
+        .unwrap();
+        fs::write(
+            input.join("partition-metadata.txt"),
+            "parameter,parameter.txt,0x00004000,0x00000000,0x00000800,0x00000001,0x00000027\n\
+             userdata,userdata.img,0xffffffff,0x00a98000,0x00001000,0x00000001,0x00000064\n",
+        )
+        .unwrap();
+
+        let img1 = dir.path().join("v1.rkaf");
+        pack_rkaf(input.to_str().unwrap(), img1.to_str().unwrap(), "RK3588", "RK3588").unwrap();
+        assert_eq!(
+            &fs::read(&img1).unwrap()[ID_OFFSET..ID_OFFSET + 5],
+            b" 007\0",
+            "id must be set while MACHINE_ID exists"
+        );
+
+        // Unpack (saves rkaf-header.bin with id " 007"), then remove MACHINE_ID
+        let unpacked = dir.path().join("unpacked");
+        unpack_file(img1.to_str().unwrap(), unpacked.to_str().unwrap()).unwrap();
+        fs::write(unpacked.join("parameter.txt"), b"CMDLINE:x\n").unwrap();
+        fs::write(
+            unpacked.join("package-file"),
+            "parameter parameter.txt\nuserdata userdata.img\n",
+        )
+        .unwrap();
+
+        let img2 = dir.path().join("v2.rkaf");
+        pack_rkaf(unpacked.to_str().unwrap(), img2.to_str().unwrap(), "RK3588", "RK3588").unwrap();
+
+        let img = fs::read(&img2).unwrap();
+        assert_eq!(
+            img[ID_OFFSET], 0,
+            "logical id must be cleared when parameter.txt has no MACHINE_ID"
+        );
     }
 
     /// padded_size is stored in 2048-byte sectors and encodes the TRUE
