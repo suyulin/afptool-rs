@@ -28,17 +28,17 @@ enum Commands {
         #[arg(help = "Output RKFW firmware image file path")]
         output: String,
 
-        #[arg(short, long, help = "Chip family (e.g., RK29XX, RK30XX, RK31XX, RK32XX, RK3368, RK3326, RK3562, RK3566, PX30)")]
-        chip: String,
+        #[arg(short, long, help = "Chip name (e.g., RK3588, RK3566, RK3562, RK3399, PX30, RK32XX); optional when rkfw-header.bin from unpack is present")]
+        chip: Option<String>,
 
-        #[arg(short, long, help = "Version in format: major.minor.build (e.g., 8.1.0)")]
-        version: String,
+        #[arg(short, long, help = "Version in format: major.minor.build (e.g., 8.1.0); optional when rkfw-header.bin from unpack is present")]
+        version: Option<String>,
 
-        #[arg(short, long, help = "Unix timestamp for build date (e.g., 1731031994)")]
-        timestamp: i64,
+        #[arg(short, long, help = "Unix timestamp for build date (e.g., 1731031994); optional when rkfw-header.bin from unpack is present")]
+        timestamp: Option<i64>,
 
-        #[arg(long, help = "Code field as hex string (e.g., 0x02000000)")]
-        code: String,
+        #[arg(long, help = "Code field as hex string (e.g., 0x02000000); optional when rkfw-header.bin from unpack is present")]
+        code: Option<String>,
     },
 
     PackRkaf {
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
             unpack_file(&input, &output)?;
         }
         Commands::PackRkfw{ input, output, chip, version, timestamp, code } => {
-            pack_rkfw(&input, &output, &chip, &version, timestamp, &code)?;
+            pack_rkfw(&input, &output, chip.as_deref(), version.as_deref(), timestamp, code.as_deref())?;
         }
         Commands::PackRkaf { input, output, model, manufacturer } => {
             pack_rkaf(&input, &output, &model, &manufacturer)?;
