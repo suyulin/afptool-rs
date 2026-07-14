@@ -3,7 +3,10 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
-    use afptool_rs::{pack_rkaf, unpack_file, RKAF_SIGNATURE, RKFW_SIGNATURE, UpdateHeader, UpdatePart};
+    use afptool_rs::{
+        pack_rkaf, unpack_file, RKAF_SIGNATURE, RKFW_SIGNATURE, UPDATE_HEADER_SIZE,
+        UpdateHeader, UpdatePart,
+    };
     use tempfile::TempDir;
 
     // 创建模拟的 RKFW 文件用于测试
@@ -93,9 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn test_update_header_from_bytes() {
+    fn test_update_header_decode() {
         let mock_rkaf = create_mock_rkaf();
-        let header = UpdateHeader::from_bytes(&mock_rkaf);
+        let header = UpdateHeader::decode(&mock_rkaf).unwrap();
         
         assert_eq!(&header.magic, RKAF_SIGNATURE);
         // 使用临时变量避免 packed struct 对齐问题
@@ -116,7 +119,7 @@ mod tests {
     }
     
     #[test]
-    fn test_update_header_to_bytes() {
+    fn test_update_header_encode() {
         let mut header = UpdateHeader::default();
         header.magic.copy_from_slice(RKAF_SIGNATURE);
         header.length = 0x800;
@@ -128,7 +131,7 @@ mod tests {
         let model = b"RK3326";
         header.model[..model.len()].copy_from_slice(model);
         
-        let bytes = header.to_bytes();
+        let bytes = header.encode().unwrap();
         assert_eq!(&bytes[0..4], RKAF_SIGNATURE);
         
         // 检查长度
@@ -178,8 +181,6 @@ mod tests {
 
     #[test]
     fn test_parm_header_stripped_on_extract() {
-        use std::mem;
-
         let temp_dir = TempDir::new().unwrap();
         let input_path = temp_dir.path().join("test.rkaf");
         let output_dir = temp_dir.path().join("out");
@@ -194,7 +195,7 @@ mod tests {
         parm_data.extend_from_slice(content);
         parm_data.extend_from_slice(&[0u8; 4]); // CRC
 
-        let header_size = mem::size_of::<UpdateHeader>();
+        let header_size = UPDATE_HEADER_SIZE;
 
         let mut header = UpdateHeader::default();
         header.magic.copy_from_slice(RKAF_SIGNATURE);
@@ -209,7 +210,7 @@ mod tests {
         part.part_byte_count = parm_data.len() as u32;
         header.parts[0] = part;
 
-        let mut file_data: Vec<u8> = header.to_bytes().to_vec();
+        let mut file_data: Vec<u8> = header.encode().unwrap().to_vec();
         file_data.extend_from_slice(&parm_data);
         file_data.extend_from_slice(&[0u8; 4]); // RKAF trailing CRC
 
@@ -263,8 +264,6 @@ mod tests {
 
     #[test]
     fn test_parameter_roundtrip() {
-        use std::mem;
-
         let temp_dir = TempDir::new().unwrap();
         let content = b"CMDLINE:console=ttyFIQ0,1500000\n";
 
@@ -280,7 +279,7 @@ mod tests {
         parm_data.extend_from_slice(content);
         parm_data.extend_from_slice(&[0u8; 4]); // CRC
 
-        let header_size = mem::size_of::<UpdateHeader>();
+        let header_size = UPDATE_HEADER_SIZE;
         let mut header = UpdateHeader::default();
         header.magic.copy_from_slice(RKAF_SIGNATURE);
         header.num_parts = 1;
@@ -293,7 +292,7 @@ mod tests {
         part.part_byte_count = parm_data.len() as u32;
         header.parts[0] = part;
 
-        let mut file_data: Vec<u8> = header.to_bytes().to_vec();
+        let mut file_data: Vec<u8> = header.encode().unwrap().to_vec();
         file_data.extend_from_slice(&parm_data);
         file_data.extend_from_slice(&[0u8; 4]);
         fs::write(&input_rkaf, &file_data).unwrap();

@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::io::{Read, Write, BufRead, BufReader, BufWriter, Seek};
 use std::collections::HashMap;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, Timelike};
-use crate::{UpdateHeader, RKFW_SIGNATURE, RKAF_SIGNATURE};
+use crate::{UpdateHeader, RKFW_SIGNATURE, RKAF_SIGNATURE, UPDATE_HEADER_SIZE};
 
 #[derive(Debug, Clone)]
 struct PartitionMetadata {
@@ -417,9 +417,8 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
     // fields) survive; the fields below are overwritten with computed values.
     let template_path = format!("{}/rkaf-header.bin", input_dir);
     let mut header = match std::fs::read(&template_path) {
-        Ok(data) if data.len() >= std::mem::size_of::<UpdateHeader>() => {
-            *UpdateHeader::from_bytes(&data)
-        }
+        Ok(data) if data.len() >= UPDATE_HEADER_SIZE => UpdateHeader::decode(&data)
+            .with_context(|| format!("Invalid RKAF header template: {template_path}"))?,
         _ => UpdateHeader {
             version: 0x01000000,
             ..Default::default()
@@ -455,7 +454,7 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         return Err(anyhow!("Missing partition metadata"));
     }
 
-    let header_size = std::mem::size_of::<UpdateHeader>() as u64;
+    let header_size = UPDATE_HEADER_SIZE as u64;
     let sector_size: u64 = 2048;
     let data_start = header_size.div_ceil(sector_size) * sector_size;
     let mut current_offset = data_start;
@@ -583,7 +582,8 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         Ok(())
     };
 
-    emit(&mut out_file, &mut checksum, header.to_bytes())?;
+    let encoded_header = header.encode()?;
+    emit(&mut out_file, &mut checksum, &encoded_header)?;
     if data_start > header_size {
         emit(&mut out_file, &mut checksum, &vec![0u8; (data_start - header_size) as usize])?;
     }
