@@ -3,7 +3,7 @@ use std::io::{Read, Seek, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use chrono::NaiveDateTime;
-use crate::{RKAF_SIGNATURE, RKFW_SIGNATURE, UpdateHeader, RKAFP_MAGIC};
+use crate::{RKAF_SIGNATURE, RKFW_SIGNATURE, UpdateHeader, RKAFP_MAGIC, UPDATE_HEADER_SIZE};
 
 pub fn unpack_file(file_path: &str, dst_path: &str) -> Result<()> {
     let mut file = File::open(file_path)?;
@@ -212,12 +212,10 @@ fn parm_content_range(name: &str, fp: &mut File, offset: u64, len: u64) -> Resul
 }
 
 fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
-    use std::mem;
-
     let mut fp = File::open(file_path)?;
-    let mut buf = vec![0u8; mem::size_of::<UpdateHeader>()];
+    let mut buf = [0u8; UPDATE_HEADER_SIZE];
     fp.read_exact(&mut buf)?;
-    let header = UpdateHeader::from_bytes(&buf);
+    let header = UpdateHeader::decode(&buf)?;
     let magic_str = std::str::from_utf8(&header.magic)?;
     if magic_str != RKAFP_MAGIC {
         return Err(anyhow!("Invalid header magic id"));
@@ -225,14 +223,6 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
 
     let filesize = fp.metadata()?.len();
     println!("Filesize: {}", filesize);
-
-    if header.num_parts as usize > crate::MAX_PARTS {
-        return Err(anyhow!(
-            "Corrupt header: {} partitions (maximum is {})",
-            header.num_parts as u32,
-            crate::MAX_PARTS
-        ));
-    }
 
     // The length field only stores the low 32 bits, so compare modulo 2^32.
     let container_end = filesize.saturating_sub(4); // trailing CRC
