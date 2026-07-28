@@ -87,6 +87,40 @@ fn rkcrc32(mut crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
+fn parm_crc32(data: &[u8]) -> u32 {
+    const POLYNOMIAL: u32 = 0x04c11db7;
+
+    let mut crc = 0u32;
+    for &byte in data {
+        crc ^= (byte as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x80000000 != 0 {
+                (crc << 1) ^ POLYNOMIAL
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+fn is_valid_parm_blob(data: &[u8]) -> bool {
+    const PARM_OVERHEAD: usize = 12;
+
+    if data.len() < PARM_OVERHEAD || &data[..4] != b"PARM" {
+        return false;
+    }
+
+    let content_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+    if content_len != data.len() - PARM_OVERHEAD {
+        return false;
+    }
+
+    let content_end = 8 + content_len;
+    let stored_crc = u32::from_le_bytes(data[content_end..content_end + 4].try_into().unwrap());
+    parm_crc32(&data[8..content_end]) == stored_crc
+}
+
 fn parse_partition_metadata(input_dir: &str) -> Result<HashMap<String, PartitionMetadata>> {
     let metadata_path = format!("{}/partition-metadata.txt", input_dir);
     let mut metadata_map = HashMap::new();
@@ -486,13 +520,18 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
             let (file_size, prebuilt) = if name == "parameter" {
                 let raw_data = std::fs::read(&file_path)
                     .map_err(|e| anyhow!("Cannot open {}: {}", file_path, e))?;
-                let content_len = raw_data.len() as u32;
-                let mut wrapped = Vec::with_capacity(raw_data.len() + 12);
-                wrapped.extend_from_slice(b"PARM");
-                wrapped.extend_from_slice(&content_len.to_le_bytes());
-                wrapped.extend_from_slice(&raw_data);
-                let crc = rkcrc32(0, &raw_data);
-                wrapped.extend_from_slice(&crc.to_le_bytes());
+                let wrapped = if is_valid_parm_blob(&raw_data) {
+                    raw_data
+                } else {
+                    let content_len = raw_data.len() as u32;
+                    let mut wrapped = Vec::with_capacity(raw_data.len() + 12);
+                    wrapped.extend_from_slice(b"PARM");
+                    wrapped.extend_from_slice(&content_len.to_le_bytes());
+                    wrapped.extend_from_slice(&raw_data);
+                    let crc = parm_crc32(&raw_data);
+                    wrapped.extend_from_slice(&crc.to_le_bytes());
+                    wrapped
+                };
                 (wrapped.len() as u64, Some(wrapped))
             } else {
                 let meta = std::fs::metadata(&file_path)
