@@ -460,22 +460,11 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
     };
     header.magic.copy_from_slice(RKAF_SIGNATURE);
 
-    let model_str = if model.starts_with(' ') {
-        model.to_string()
-    } else {
-        format!(" {}", model)
-    };
-    write_cstr_preserving_tail(&mut header.model, &model_str);
-
-    let manufacturer_str = if manufacturer.starts_with(' ') {
-        manufacturer.to_string()
-    } else {
-        format!(" {}", manufacturer)
-    };
-    write_cstr_preserving_tail(&mut header.manufacturer, &manufacturer_str);
+    write_cstr_preserving_tail(&mut header.model, model);
+    write_cstr_preserving_tail(&mut header.manufacturer, manufacturer);
 
     if !machine_id.is_empty() {
-        write_cstr_preserving_tail(&mut header.id, &format!(" {}", machine_id));
+        write_cstr_preserving_tail(&mut header.id, &machine_id);
     } else {
         // No MACHINE_ID in parameter.txt: clear the logical id so a template
         // value cannot leak through. Bytes after the NUL are left untouched
