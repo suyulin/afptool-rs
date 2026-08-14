@@ -176,6 +176,13 @@ jobs:
     - name: Create release archives
       run: |
         cd artifacts
+
+        # upload-artifact/download-artifact does not preserve Unix mode bits.
+        chmod +x afptool-rs-linux-x86_64/afptool-rs-linux-x86_64
+        chmod +x afptool-rs-linux-aarch64/afptool-rs-linux-aarch64
+        chmod +x afptool-rs-macos-x86_64/afptool-rs-macos-x86_64
+        chmod +x afptool-rs-macos-aarch64/afptool-rs-macos-aarch64
+        chmod +x afptool-rs-macos-universal/afptool-rs-macos-universal
         
         # Linux
         tar -czf afptool-rs-linux-x86_64.tar.gz -C afptool-rs-linux-x86_64 .
