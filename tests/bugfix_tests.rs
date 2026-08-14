@@ -277,6 +277,61 @@ mod tests {
         );
     }
 
+    /// model, id and manufacturer are fixed-width machine-readable fields that
+    /// the vendor tool copies verbatim out of parameter.txt: rkpack.c writes
+    /// them with a plain "%s" and rkflashtool's rkunpack.c reads the model
+    /// straight from offset 0x08. Genuine RK3308 factory images bear that out -
+    /// model and id sit flush at bytes 8 and 42, and the one field that does
+    /// carry a leading space (manufacturer) carries it in their parameter.txt
+    /// too. So pack must prepend nothing of its own, or a consumer comparing a
+    /// field against a known board identity fails for a reason that has nothing
+    /// to do with the image.
+    #[test]
+    fn rkaf_identity_fields_have_no_leading_space() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path();
+        fs::write(input.join("parameter.txt"), b"MACHINE_ID:007\nCMDLINE:x\n").unwrap();
+        fs::write(input.join("userdata.img"), vec![0xAAu8; 100]).unwrap();
+        fs::write(
+            input.join("package-file"),
+            "parameter parameter.txt\nuserdata userdata.img\n",
+        )
+        .unwrap();
+        fs::write(
+            input.join("partition-metadata.txt"),
+            "parameter,parameter.txt,0x00004000,0x00000000,0x00000800,0x00000001,0x00000016\n\
+             userdata,userdata.img,0xffffffff,0x00a98000,0x00001000,0x00000001,0x00000064\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("out.rkaf");
+        pack_rkaf(
+            input.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "rithum,switch-pro",
+            "Rithum",
+        )
+        .unwrap();
+
+        let img = fs::read(&out).unwrap();
+
+        // magic[4] + length[4] => model[34] at 8, id[30] at 42,
+        // manufacturer[56] at 72.
+        let field = |off: usize, len: usize| {
+            let raw = &img[off..off + len];
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(len);
+            std::str::from_utf8(&raw[..end]).unwrap().to_string()
+        };
+
+        assert_eq!(field(8, 34), "rithum,switch-pro", "model must start at byte 8");
+        assert_eq!(field(42, 30), "007", "id must not be padded");
+        assert_eq!(field(72, 56), "Rithum", "manufacturer must not be padded");
+
+        assert_ne!(img[8], b' ', "model must not be space-prefixed");
+        assert_ne!(img[42], b' ', "id must not be space-prefixed");
+        assert_ne!(img[72], b' ', "manufacturer must not be space-prefixed");
+    }
+
     /// The vendor tool leaves undocumented bytes (e.g. 0x48 0x01) in the tails
     /// of string fields. unpack must save the original RKAF header and pack
     /// must use it as a template so those bytes survive a round-trip.
@@ -332,7 +387,7 @@ mod tests {
         assert_eq!(img[0x26], 0x01, "model-field tail byte must survive repack");
         assert_eq!(img[part1_path_tail], 0x48, "path-field tail byte must survive repack");
         // sanity: the real strings are still intact and NUL-terminated
-        assert_eq!(&img[8..16], b" RK3588\0");
+        assert_eq!(&img[8..15], b"RK3588\0");
         assert_eq!(&img[140 + 112..140 + 112 + 9], b"userdata\0");
     }
 
@@ -363,8 +418,8 @@ mod tests {
         let img1 = dir.path().join("v1.rkaf");
         pack_rkaf(input.to_str().unwrap(), img1.to_str().unwrap(), "RK3588", "RK3588").unwrap();
         assert_eq!(
-            &fs::read(&img1).unwrap()[ID_OFFSET..ID_OFFSET + 5],
-            b" 007\0",
+            &fs::read(&img1).unwrap()[ID_OFFSET..ID_OFFSET + 4],
+            b"007\0",
             "id must be set while MACHINE_ID exists"
         );
 
