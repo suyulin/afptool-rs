@@ -411,14 +411,15 @@ fn put_u32_le(slice: &mut [u8], value: u32) {
 
 pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: &str) -> Result<()> {
     let package_file_path = format!("{}/package-file", input_dir);
-    let package_file = File::open(&package_file_path)
+    let package_file = std::fs::read(&package_file_path)
         .map_err(|_| anyhow!("Cannot find package-file in {}", input_dir))?;
-
-    let reader = BufReader::new(package_file);
     let mut file_list = Vec::new();
 
-    for line in reader.lines() {
-        let line = line?;
+    // Vendor package files can contain comments in legacy encodings such as
+    // GBK. File entries themselves are ASCII, so parse lines lossily while
+    // preserving the original package-file bytes written into the image.
+    for raw_line in package_file.split(|&byte| byte == b'\n') {
+        let line = String::from_utf8_lossy(raw_line);
         let line = line.trim();
 
         if line.is_empty() || line.starts_with('#') {
@@ -579,16 +580,16 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         // as a partition is swapped for one of a different size.
         part.padded_size = file_size.div_ceil(sector_size) as u32;
 
-        // Data offsets beyond 4 GiB have no verified on-disk encoding; refuse
-        // rather than wrap silently. Place oversized partitions last.
-        if file_offset > u32::MAX as u64 {
-            return Err(anyhow!(
-                "partition '{}' would start at byte {} (>4 GiB); \
-                 reorder package-file so partitions larger than 4 GiB come last",
-                name, file_offset
-            ));
-        }
+        // Vendor images store offsets beyond 4 GiB modulo 2^32, just like
+        // partition byte counts. The unpacker reconstructs the physical
+        // offset from package order and the preceding padded allocation.
         part.part_offset = file_offset as u32;
+        if file_offset > u32::MAX as u64 {
+            println!(
+                "note: partition '{}' starts at byte {} (>4 GiB); header stores the low 32 bits (0x{:08x}) as vendor images do",
+                name, file_offset, file_offset as u32
+            );
+        }
         // The on-disk field is 32-bit; vendor images store the low 32 bits
         // for >4 GiB partitions (verified against a real RK3588 firmware).
         part.part_byte_count = file_size as u32;

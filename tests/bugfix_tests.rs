@@ -251,7 +251,7 @@ mod tests {
         fs::write(input.join("userdata.img"), vec![0xAAu8; 100]).unwrap();
         fs::write(
             input.join("package-file"),
-            "parameter parameter.txt\nbackup RESERVED\nuserdata userdata.img\n",
+            b"# legacy comment: \xff\xfe\nparameter parameter.txt\nbackup RESERVED\nuserdata userdata.img\n",
         )
         .unwrap();
         fs::write(
@@ -438,14 +438,30 @@ mod tests {
         drop(f);
         assert_eq!(fs::metadata(&big).unwrap().len(), FIVE_GIB);
 
-        fs::write(input.join("package-file"), "userdata userdata.img\n").unwrap();
-        // flash_size in sectors (5 GiB / 512 = 0xA00000), padded/byte-count wrapped low-32
+        fs::write(input.join("recovery.img"), b"TAILPART").unwrap();
+        fs::write(
+            input.join("package-file"),
+            "userdata userdata.img\nrecovery recovery.img\n",
+        )
+        .unwrap();
+        // flash_size in sectors (5 GiB / 512 = 0xA00000), padded/byte-count wrapped low-32.
+        // The following recovery partition also has a wrapped physical offset.
         let wrapped = (FIVE_GIB & 0xFFFF_FFFF) as u32;
         fs::write(
             input.join("partition-metadata.txt"),
             format!(
-                "userdata,userdata.img,{:#010x},{:#010x},{:#010x},{:#010x},{:#010x}\n",
-                0x00A0_0000u32, 0x0000_8000u32, 2048u32, wrapped, wrapped
+                "userdata,userdata.img,{:#010x},{:#010x},{:#010x},{:#010x},{:#010x}\n\
+                 recovery,recovery.img,{:#010x},{:#010x},{:#010x},{:#010x},{:#010x}\n",
+                0x00A0_0000u32,
+                0x0000_8000u32,
+                2048u32,
+                wrapped,
+                wrapped,
+                0x0000_1000u32,
+                0x0000_4000u32,
+                0x4000_0800u32,
+                1u32,
+                8u32,
             ),
         )
         .unwrap();
@@ -459,8 +475,11 @@ mod tests {
         )
         .unwrap();
 
-        // header sector + data (already 2048-aligned) + 4-byte CRC
-        assert_eq!(fs::metadata(&packed).unwrap().len(), 2048 + FIVE_GIB + 4);
+        // Header sector + 5 GiB data + one padded recovery sector + CRC.
+        assert_eq!(
+            fs::metadata(&packed).unwrap().len(),
+            2048 + FIVE_GIB + 2048 + 4
+        );
 
         let out = dir.path().join("out");
         unpack_file(packed.to_str().unwrap(), out.to_str().unwrap()).unwrap();
@@ -479,5 +498,6 @@ mod tests {
         let mut tail = [0u8; 4];
         std::io::Read::read_exact(&mut f, &mut tail).unwrap();
         assert_eq!(&tail, b"TAIL");
+        assert_eq!(fs::read(out.join("recovery.img")).unwrap(), b"TAILPART");
     }
 }

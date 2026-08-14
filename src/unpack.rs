@@ -211,6 +211,82 @@ fn parm_content_range(name: &str, fp: &mut File, offset: u64, len: u64) -> Resul
     Ok((offset + 8, content_len))
 }
 
+/// Recover the 64-bit physical layout represented by RKAF's 32-bit offset and
+/// byte-count fields. `padded_size` is a sector count and therefore retains
+/// the true allocation size even when a partition crosses the 4 GiB boundary.
+fn recover_partition_layout(header: &UpdateHeader, container_end: u64) -> Result<Vec<(u64, u64)>> {
+    const SECTOR_SIZE: u64 = 2048;
+    const U32_RANGE: u64 = 1u64 << 32;
+
+    let mut layout = Vec::with_capacity(header.num_parts as usize);
+    let mut known_members = Vec::new();
+    let mut previous_end = 0u64;
+
+    for part in header.parts.iter().take(header.num_parts as usize) {
+        let raw_offset = part.part_offset as u64;
+        if raw_offset == 0 {
+            layout.push((0, part.part_byte_count as u64));
+            continue;
+        }
+
+        // Multiple header entries can intentionally refer to the same file.
+        // Reuse its already recovered layout instead of treating the repeated
+        // low offset as another 32-bit wrap.
+        if let Some(&(_, _, offset, true_count)) = known_members.iter().find(
+            |&&(stored_offset, stored_path, _, _)| {
+                stored_offset == part.part_offset && stored_path == part.full_path
+            },
+        ) {
+            layout.push((offset, true_count));
+            continue;
+        }
+
+        let padded_bytes = (part.padded_size as u64)
+            .checked_mul(SECTOR_SIZE)
+            .ok_or_else(|| anyhow!("partition padded size overflows u64"))?;
+        let true_count = if padded_bytes == 0 {
+            part.part_byte_count as u64
+        } else {
+            crate::recover_true_size(part.part_byte_count, padded_bytes)
+        };
+        let allocation_size = if padded_bytes == 0 {
+            true_count.div_ceil(SECTOR_SIZE) * SECTOR_SIZE
+        } else {
+            padded_bytes
+        };
+
+        // Header entries follow physical package order. Add as many complete
+        // u32 ranges as necessary to place this member after the preceding
+        // allocation while preserving the stored low 32 bits.
+        let mut offset = raw_offset;
+        if offset < previous_end {
+            let wraps = (previous_end - offset).div_ceil(U32_RANGE);
+            offset = offset
+                .checked_add(wraps * U32_RANGE)
+                .ok_or_else(|| anyhow!("partition offset overflows u64"))?;
+        }
+
+        let data_end = offset
+            .checked_add(true_count)
+            .ok_or_else(|| anyhow!("partition data range overflows u64"))?;
+        let allocation_end = offset
+            .checked_add(allocation_size)
+            .ok_or_else(|| anyhow!("partition allocation range overflows u64"))?;
+        if data_end > container_end {
+            return Err(anyhow!(
+                "Partition range exceeds container: offset {}, size {}, container end {}",
+                offset, true_count, container_end
+            ));
+        }
+
+        layout.push((offset, true_count));
+        known_members.push((part.part_offset, part.full_path, offset, true_count));
+        previous_end = allocation_end;
+    }
+
+    Ok(layout)
+}
+
 fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
     let mut fp = File::open(file_path)?;
     let mut buf = [0u8; UPDATE_HEADER_SIZE];
@@ -235,14 +311,7 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
         );
     }
 
-    // Offsets of all data-bearing partitions, used to bound each partition's
-    // true size when its 32-bit byte count has wrapped.
-    let mut data_offsets: Vec<u64> = (0..header.num_parts as usize)
-        .map(|i| header.parts[i].part_offset as u64)
-        .filter(|&off| off > 0)
-        .collect();
-    data_offsets.sort_unstable();
-    data_offsets.dedup();
+    let partition_layout = recover_partition_layout(&header, container_end)?;
     std::fs::create_dir_all(format!("{}/Image", dst_path))?;
     // 安全地从null-terminated字符串中提取文本
     let manufacturer = std::ffi::CStr::from_bytes_until_nul(&header.manufacturer)
@@ -299,19 +368,13 @@ fn unpack_rkafp(file_path: &str, dst_path: &str) -> Result<()> {
 
             let file_to_extract = format!("{}/{}", dst_path, part_full_path);
 
-            // part_byte_count only stores the low 32 bits; recover the true
-            // size using the next partition's offset (or the container end)
-            // as an upper bound.
-            let offset = part.part_offset as u64;
-            let bound = data_offsets
-                .iter()
-                .find(|&&o| o > offset)
-                .copied()
-                .unwrap_or(container_end);
-            let true_count = crate::recover_true_size(
-                part.part_byte_count,
-                bound.saturating_sub(offset),
-            );
+            let (offset, true_count) = partition_layout[i as usize];
+            if offset != part.part_offset as u64 {
+                println!(
+                    "note: partition '{}' offset field is 0x{:08x}; recovered true offset {} bytes (>4 GiB, field wrapped)",
+                    part_name, part_offset, offset
+                );
+            }
             if true_count != part.part_byte_count as u64 {
                 println!(
                     "note: partition '{}' byte count field is 0x{:08x}; recovered true size {} bytes (>4 GiB, field wrapped)",
@@ -338,4 +401,60 @@ fn write_file(path: &Path, buffer: &[u8]) -> Result<()> {
     let mut file = File::create(path)?;
     file.write_all(buffer)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recover_partition_layout;
+    use crate::{UpdateHeader, UpdatePart, RKAF_SIGNATURE};
+
+    fn part(offset: u32, padded_sectors: u32, byte_count: u32) -> UpdatePart {
+        UpdatePart {
+            part_offset: offset,
+            padded_size: padded_sectors,
+            part_byte_count: byte_count,
+            ..UpdatePart::default()
+        }
+    }
+
+    fn named_part(
+        path: &[u8],
+        offset: u32,
+        padded_sectors: u32,
+        byte_count: u32,
+    ) -> UpdatePart {
+        let mut part = part(offset, padded_sectors, byte_count);
+        part.full_path[..path.len()].copy_from_slice(path);
+        part
+    }
+
+    #[test]
+    fn recovers_wrapped_offsets_after_large_partition() {
+        let mut header = UpdateHeader::default();
+        header.magic.copy_from_slice(RKAF_SIGNATURE);
+        header.num_parts = 3;
+        header.parts[0] = part(0x00b5_7000, 0x002a_0134, 0x5009_a000);
+        header.parts[1] = part(0x50bf_1000, 0x0000_158b, 0x00ac_5800);
+        header.parts[2] = part(0x516b_6800, 0x0000_0018, 0x0000_c000);
+
+        let layout = recover_partition_layout(&header, 0x1_516c_2800).unwrap();
+
+        assert_eq!(layout[0], (0x00b5_7000, 0x1_5009_a000));
+        assert_eq!(layout[1], (0x1_50bf_1000, 0x00ac_5800));
+        assert_eq!(layout[2], (0x1_516b_6800, 0x0000_c000));
+    }
+
+    #[test]
+    fn preserves_aliases_that_share_a_member_offset() {
+        let mut header = UpdateHeader {
+            num_parts: 2,
+            ..UpdateHeader::default()
+        };
+        header.parts[0] = named_part(b"shared.img", 0x0000_0800, 1, 4);
+        header.parts[1] = named_part(b"shared.img", 0x0000_0800, 1, 4);
+
+        let layout = recover_partition_layout(&header, 0x0000_1000).unwrap();
+
+        assert_eq!(layout, vec![(0x800, 4), (0x800, 4)]);
+    }
 }

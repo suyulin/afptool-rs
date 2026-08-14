@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.4 (2026-08-14)
+
+- Fix extraction of partitions larger than 4 GiB when later partition offsets wrap at the 32-bit boundary.
+- Support repacking firmware with partitions located beyond the 4 GiB boundary.
+- Accept vendor package-file comments encoded with non-UTF-8 legacy character sets.
+
 ## v1.2.3 (2026-05-10)
 
 - Internal updates and bug fixes.
