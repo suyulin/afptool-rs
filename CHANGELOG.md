@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.5 (2026-08-17)
+
+- Fix RKAF repacking when the embedded `package-file` path differs from the member path stored in the container header.
+- Preserve original RKAF member paths while accepting `package-file` paths as source-file fallbacks.
+- Fix PARM checksums to use Rockchip `rkcrc32`, restoring byte-identical round trips for vendor firmware.
+- Preserve structurally valid pre-wrapped PARM blobs byte-for-byte, including blobs produced by legacy tools.
+
 ## v1.2.4 (2026-08-14)
 
 - Fix extraction of partitions larger than 4 GiB when later partition offsets wrap at the 32-bit boundary.

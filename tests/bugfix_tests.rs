@@ -8,7 +8,7 @@ mod tests {
     use std::io::{Seek, SeekFrom, Write};
     use afptool_rs::{
         decode_chip_field, encode_chip_field, pack_rkaf, pack_rkfw, recover_true_size,
-        unpack_file,
+        unpack_file, UpdateHeader,
     };
     use tempfile::TempDir;
 
@@ -440,6 +440,99 @@ mod tests {
         assert_eq!(
             img[ID_OFFSET], 0,
             "logical id must be cleared when parameter.txt has no MACHINE_ID"
+        );
+    }
+
+    /// Some vendor RKAF images use different paths for the same member: the
+    /// header names `MiniLoaderAll.bin`, while the embedded package-file names
+    /// `Image/MiniLoaderAll.bin`. Unpack follows the header, so pack must use
+    /// the saved metadata path as both the extracted source location and the
+    /// repacked container member name.
+    #[test]
+    fn rkaf_repack_handles_package_and_header_path_mismatch() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path();
+        let loader = b"RK3308 loader bytes";
+
+        fs::write(input.join("MiniLoaderAll.bin"), loader).unwrap();
+        fs::write(
+            input.join("package-file"),
+            "loader Image/MiniLoaderAll.bin\n",
+        )
+        .unwrap();
+        fs::write(
+            input.join("partition-metadata.txt"),
+            "loader,MiniLoaderAll.bin,0xffffffff,0x00000000,0x00000800,0x00000001,0x00000013\n",
+        )
+        .unwrap();
+
+        let packed = dir.path().join("out.rkaf");
+        pack_rkaf(
+            input.to_str().unwrap(),
+            packed.to_str().unwrap(),
+            "RK3308",
+            "RK3308",
+        )
+        .unwrap();
+
+        let image = fs::read(&packed).unwrap();
+        let header = UpdateHeader::decode(&image).unwrap();
+        let stored_path = std::ffi::CStr::from_bytes_until_nul(&header.parts[0].full_path)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert_eq!(stored_path, "MiniLoaderAll.bin");
+        assert_eq!(
+            &image[header.parts[0].part_offset as usize
+                ..header.parts[0].part_offset as usize + loader.len()],
+            loader
+        );
+    }
+
+    /// Metadata remains authoritative for the container member name, but a
+    /// package-file path is still accepted as a source fallback for manually
+    /// assembled input directories.
+    #[test]
+    fn rkaf_repack_falls_back_to_package_path_for_source_bytes() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path();
+        let loader = b"replacement loader";
+
+        fs::create_dir(input.join("Image")).unwrap();
+        fs::write(input.join("Image/MiniLoaderAll.bin"), loader).unwrap();
+        fs::write(
+            input.join("package-file"),
+            "loader Image/MiniLoaderAll.bin\n",
+        )
+        .unwrap();
+        fs::write(
+            input.join("partition-metadata.txt"),
+            "loader,MiniLoaderAll.bin,0xffffffff,0x00000000,0x00000800,0x00000001,0x00000012\n",
+        )
+        .unwrap();
+
+        let packed = dir.path().join("out.rkaf");
+        pack_rkaf(
+            input.to_str().unwrap(),
+            packed.to_str().unwrap(),
+            "RK3308",
+            "RK3308",
+        )
+        .unwrap();
+
+        let image = fs::read(&packed).unwrap();
+        let header = UpdateHeader::decode(&image).unwrap();
+        let stored_path = std::ffi::CStr::from_bytes_until_nul(&header.parts[0].full_path)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert_eq!(stored_path, "MiniLoaderAll.bin");
+        assert_eq!(
+            &image[header.parts[0].part_offset as usize
+                ..header.parts[0].part_offset as usize + loader.len()],
+            loader
         );
     }
 

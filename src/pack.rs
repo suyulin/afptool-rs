@@ -1,12 +1,14 @@
 use std::fs::File;
 use std::io::{Read, Write, BufRead, BufReader, BufWriter, Seek};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, Timelike};
 use crate::{UpdateHeader, RKFW_SIGNATURE, RKAF_SIGNATURE, UPDATE_HEADER_SIZE};
 
 #[derive(Debug, Clone)]
 struct PartitionMetadata {
+    full_path: String,
     flash_size: u32,
     flash_offset: u32,
 }
@@ -88,23 +90,10 @@ fn rkcrc32(mut crc: u32, data: &[u8]) -> u32 {
 }
 
 fn parm_crc32(data: &[u8]) -> u32 {
-    const POLYNOMIAL: u32 = 0x04c11db7;
-
-    let mut crc = 0u32;
-    for &byte in data {
-        crc ^= (byte as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x80000000 != 0 {
-                (crc << 1) ^ POLYNOMIAL
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
+    rkcrc32(0, data)
 }
 
-fn is_valid_parm_blob(data: &[u8]) -> bool {
+fn is_parm_blob(data: &[u8]) -> bool {
     const PARM_OVERHEAD: usize = 12;
 
     if data.len() < PARM_OVERHEAD || &data[..4] != b"PARM" {
@@ -112,13 +101,7 @@ fn is_valid_parm_blob(data: &[u8]) -> bool {
     }
 
     let content_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    if content_len != data.len() - PARM_OVERHEAD {
-        return false;
-    }
-
-    let content_end = 8 + content_len;
-    let stored_crc = u32::from_le_bytes(data[content_end..content_end + 4].try_into().unwrap());
-    parm_crc32(&data[8..content_end]) == stored_crc
+    content_len == data.len() - PARM_OVERHEAD
 }
 
 fn parse_partition_metadata(input_dir: &str) -> Result<HashMap<String, PartitionMetadata>> {
@@ -142,10 +125,12 @@ fn parse_partition_metadata(input_dir: &str) -> Result<HashMap<String, Partition
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() >= 7 {
             let name = parts[0].to_string();
+            let full_path = parts[1].to_string();
             let flash_size = u32::from_str_radix(parts[2].trim_start_matches("0x"), 16)?;
             let flash_offset = u32::from_str_radix(parts[3].trim_start_matches("0x"), 16)?;
 
             metadata_map.insert(name, PartitionMetadata {
+                full_path,
                 flash_size,
                 flash_offset,
             });
@@ -153,6 +138,28 @@ fn parse_partition_metadata(input_dir: &str) -> Result<HashMap<String, Partition
     }
 
     Ok(metadata_map)
+}
+
+/// Resolve the local file that supplies a partition's bytes.
+///
+/// Some vendor images disagree with themselves: `package-file` names a build
+/// path such as `Image/MiniLoaderAll.bin`, while the RKAF header stores
+/// `MiniLoaderAll.bin`. `unpack` follows the header because that is the actual
+/// container member name. Prefer that saved path when repacking an unpacked
+/// image, and keep the package path as a fallback for hand-built directories.
+fn resolve_member_source(
+    input_dir: &Path,
+    package_path: &str,
+    metadata: Option<&PartitionMetadata>,
+) -> PathBuf {
+    if let Some(metadata) = metadata {
+        let header_path = input_dir.join(&metadata.full_path);
+        if header_path.is_file() {
+            return header_path;
+        }
+    }
+
+    input_dir.join(package_path)
 }
 
 pub fn pack_rkfw(
@@ -436,17 +443,6 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         return Err(anyhow!("No files found in package-file"));
     }
 
-    let mut machine_id = String::new();
-    if let Ok(param_file) = File::open(format!("{}/parameter.txt", input_dir)) {
-        let reader = BufReader::new(param_file);
-        for line in reader.lines().map_while(Result::ok) {
-            if line.starts_with("MACHINE_ID:") {
-                machine_id = line.split(':').nth(1).unwrap_or("").trim().to_string();
-                break;
-            }
-        }
-    }
-
     // When repacking an unpacked image, start from the original header so
     // undocumented bytes (the vendor tool leaves data in the tails of string
     // fields) survive; the fields below are overwritten with computed values.
@@ -464,6 +460,29 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
     write_cstr_preserving_tail(&mut header.model, model);
     write_cstr_preserving_tail(&mut header.manufacturer, manufacturer);
 
+    let partition_metadata = parse_partition_metadata(input_dir)?;
+    if partition_metadata.is_empty() {
+        return Err(anyhow!("Missing partition metadata"));
+    }
+
+    let mut machine_id = String::new();
+    if let Some((_, package_path)) = file_list.iter().find(|(name, _)| name == "parameter") {
+        let parameter_path = resolve_member_source(
+            Path::new(input_dir),
+            package_path,
+            partition_metadata.get("parameter"),
+        );
+        if let Ok(param_file) = File::open(parameter_path) {
+            let reader = BufReader::new(param_file);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.starts_with("MACHINE_ID:") {
+                    machine_id = line.split(':').nth(1).unwrap_or("").trim().to_string();
+                    break;
+                }
+            }
+        }
+    }
+
     if !machine_id.is_empty() {
         write_cstr_preserving_tail(&mut header.id, &machine_id);
     } else {
@@ -473,11 +492,6 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         header.id[0] = 0;
     }
 
-    let partition_metadata = parse_partition_metadata(input_dir)?;
-    if partition_metadata.is_empty() {
-        return Err(anyhow!("Missing partition metadata"));
-    }
-
     let header_size = UPDATE_HEADER_SIZE as u64;
     let sector_size: u64 = 2048;
     let data_start = header_size.div_ceil(sector_size) * sector_size;
@@ -485,8 +499,9 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
 
     // Layout pass: sizes come from file metadata (or the small PARM-wrapped
     // parameter blob built in memory); multi-GiB partitions are never loaded.
-    // (path, pre-built data for "parameter" partitions, true size, padded size)
-    let mut write_list: Vec<(String, Option<Vec<u8>>, u64, u64)> = Vec::new();
+    // (source path, pre-built data for "parameter" partitions, true size,
+    // padded size)
+    let mut write_list: Vec<(PathBuf, Option<Vec<u8>>, u64, u64)> = Vec::new();
     let mut layout_map: HashMap<String, (u64, u64)> = HashMap::new();
 
     let mut emitted = 0usize;
@@ -498,19 +513,27 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
             continue;
         }
 
+        let metadata = partition_metadata.get(name);
+        // Preserve the path recorded in the original container header. It may
+        // legitimately differ from the build path stored in package-file.
+        let header_path = metadata
+            .map(|metadata| metadata.full_path.as_str())
+            .filter(|path| !path.is_empty())
+            .unwrap_or(path);
+
         let (file_offset, file_size) = if path == "SELF" {
             (0u64, 0u64)
-        } else if let Some(&(offset, size)) = layout_map.get(path) {
+        } else if let Some(&(offset, size)) = layout_map.get(header_path) {
             // File already laid out, reuse offset
             (offset, size)
         } else {
-            let file_path = format!("{}/{}", input_dir, path);
+            let file_path = resolve_member_source(Path::new(input_dir), path, metadata);
 
             // "parameter" partitions are stored PARM-wrapped in the image
             let (file_size, prebuilt) = if name == "parameter" {
                 let raw_data = std::fs::read(&file_path)
-                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path, e))?;
-                let wrapped = if is_valid_parm_blob(&raw_data) {
+                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path.display(), e))?;
+                let wrapped = if is_parm_blob(&raw_data) {
                     raw_data
                 } else {
                     let content_len = raw_data.len() as u32;
@@ -525,15 +548,15 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
                 (wrapped.len() as u64, Some(wrapped))
             } else {
                 let meta = std::fs::metadata(&file_path)
-                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path, e))?;
+                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path.display(), e))?;
                 (meta.len(), None)
             };
 
             let padded_size = file_size.div_ceil(sector_size) * sector_size;
             let file_offset = current_offset;
 
-            layout_map.insert(path.clone(), (file_offset, file_size));
-            write_list.push((path.clone(), prebuilt, file_size, padded_size));
+            layout_map.insert(header_path.to_string(), (file_offset, file_size));
+            write_list.push((file_path, prebuilt, file_size, padded_size));
 
             current_offset += padded_size;
 
@@ -550,9 +573,9 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
         // Mutate the slot in place so template bytes in the field tails survive.
         let part = &mut header.parts[emitted];
         write_cstr_preserving_tail(&mut part.name, name);
-        write_cstr_preserving_tail(&mut part.full_path, path);
+        write_cstr_preserving_tail(&mut part.full_path, header_path);
 
-        if let Some(meta) = partition_metadata.get(name) {
+        if let Some(meta) = metadata {
             part.flash_size = meta.flash_size;
             part.flash_offset = meta.flash_offset;
         } else {
@@ -618,13 +641,12 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
     }
 
     let mut chunk = vec![0u8; 4 * 1024 * 1024];
-    for (path, prebuilt, file_size, padded_size) in &write_list {
+    for (file_path, prebuilt, file_size, padded_size) in &write_list {
         match prebuilt {
             Some(data) => emit(&mut out_file, &mut checksum, data)?,
             None => {
-                let file_path = format!("{}/{}", input_dir, path);
-                let mut fp = File::open(&file_path)
-                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path, e))?;
+                let mut fp = File::open(file_path)
+                    .map_err(|e| anyhow!("Cannot open {}: {}", file_path.display(), e))?;
                 let mut written: u64 = 0;
                 loop {
                     let n = fp.read(&mut chunk)?;
@@ -637,7 +659,7 @@ pub fn pack_rkaf(input_dir: &str, output_file: &str, model: &str, manufacturer: 
                 if written != *file_size {
                     return Err(anyhow!(
                         "{} changed size while packing ({} bytes read, {} expected)",
-                        file_path, written, file_size
+                        file_path.display(), written, file_size
                     ));
                 }
             }
