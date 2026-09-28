@@ -1,8 +1,14 @@
 use anyhow::{bail, Result};
 mod pack;
+mod ssfw;
 mod unpack;
 
 pub use pack::{chip_name_to_code, encode_chip_field, pack_rkaf, pack_rkfw};
+pub use ssfw::{
+    rkfw_storage_mask, storage_code, storage_name, SsfwChild, SsfwEntry, SsfwHeader,
+    SsfwImage, RKFW_HEADER_SIZE, RKFW_STORAGE_OFFSET, SSFW_ENTRY_SIZE,
+    SSFW_HEADER_SIZE, SSFW_SIGNATURE,
+};
 pub use unpack::{decode_chip_field, unpack_file};
 
 /// Recover a true (possibly >4 GiB) length from an on-disk u32 field that

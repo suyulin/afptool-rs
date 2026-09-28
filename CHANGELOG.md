@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.6 (2026-09-28)
+
+- Add parsing and streaming extraction for multi-storage SSFW images created by `rkImageMaker -merge`.
+- Expose zero-copy SSFW container and child-image APIs for downstream RockUSB integrations.
+
 ## v1.2.5 (2026-08-17)
 
 - Fix RKAF repacking when the embedded `package-file` path differs from the member path stored in the container header.

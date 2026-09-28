@@ -3,7 +3,11 @@ use std::io::{Read, Seek, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use chrono::NaiveDateTime;
-use crate::{RKAF_SIGNATURE, RKFW_SIGNATURE, UpdateHeader, RKAFP_MAGIC, UPDATE_HEADER_SIZE};
+use crate::{
+    rkfw_storage_mask, storage_code, storage_name, ssfw::validate_entries, SsfwEntry, SsfwHeader,
+    RKAF_SIGNATURE, RKFW_HEADER_SIZE, RKFW_SIGNATURE, SSFW_ENTRY_SIZE,
+    SSFW_HEADER_SIZE, SSFW_SIGNATURE, UpdateHeader, RKAFP_MAGIC, UPDATE_HEADER_SIZE,
+};
 
 pub fn unpack_file(file_path: &str, dst_path: &str) -> Result<()> {
     let mut file = File::open(file_path)?;
@@ -13,10 +17,118 @@ pub fn unpack_file(file_path: &str, dst_path: &str) -> Result<()> {
     match &signature[..] {
         RKAF_SIGNATURE => unpack_rkafp(file_path, dst_path)?,
         RKFW_SIGNATURE => unpack_rkfw(file_path, dst_path)?,
+        SSFW_SIGNATURE => unpack_ssfw(file_path, dst_path)?,
         _ => {
             return Err(anyhow!("Unknown signature: {:?}", signature));
         }
     }
+    Ok(())
+}
+
+fn unpack_ssfw(file_path: &str, dst_path: &str) -> Result<()> {
+    let mut fp = File::open(file_path)?;
+    let file_size = fp.metadata()?.len();
+
+    let mut fixed_header = [0u8; SSFW_HEADER_SIZE];
+    fp.read_exact(&mut fixed_header)?;
+    let header = SsfwHeader::decode(&fixed_header)?;
+    let header_size = header.header_size as u64;
+    if header_size > file_size {
+        return Err(anyhow!(
+            "SSFW header size {} exceeds file size {}",
+            header_size,
+            file_size
+        ));
+    }
+
+    let table_size = (header.image_count as u64)
+        .checked_mul(SSFW_ENTRY_SIZE as u64)
+        .ok_or_else(|| anyhow!("SSFW entry table size overflows u64"))?;
+    let table_end = header_size
+        .checked_add(table_size)
+        .ok_or_else(|| anyhow!("SSFW entry table range overflows u64"))?;
+    if table_end > file_size {
+        return Err(anyhow!(
+            "SSFW entry table ends at {}, beyond file size {}",
+            table_end,
+            file_size
+        ));
+    }
+
+    let raw_header_len = usize::try_from(header_size)
+        .map_err(|_| anyhow!("SSFW header is too large for this platform"))?;
+    let mut raw_header = vec![0u8; raw_header_len];
+    raw_header[..SSFW_HEADER_SIZE].copy_from_slice(&fixed_header);
+    if raw_header_len > SSFW_HEADER_SIZE {
+        fp.read_exact(&mut raw_header[SSFW_HEADER_SIZE..])?;
+    }
+
+    fp.seek(std::io::SeekFrom::Start(header_size))?;
+    let table_len = usize::try_from(table_size)
+        .map_err(|_| anyhow!("SSFW entry table is too large for this platform"))?;
+    let mut table = vec![0u8; table_len];
+    fp.read_exact(&mut table)?;
+    let entries = table
+        .chunks_exact(SSFW_ENTRY_SIZE)
+        .map(SsfwEntry::decode)
+        .collect::<Result<Vec<_>>>()?;
+
+    validate_entries(&entries, table_end, file_size)?;
+
+    std::fs::create_dir_all(dst_path)?;
+    write_file(
+        Path::new(&format!("{}/ssfw-header.bin", dst_path)),
+        &raw_header,
+    )?;
+    let mut manifest = File::create(format!("{}/ssfw-manifest.txt", dst_path))?;
+    writeln!(
+        manifest,
+        "# index,offset,size,storage_mask,storage_code,file"
+    )?;
+
+    println!("SSFW signature detected");
+    println!("version: 0x{:08x}", header.version);
+    println!("merge version: 0x{:08x}", header.merge_version);
+    println!("images: {}", header.image_count);
+
+    for (index, entry) in entries.iter().copied().enumerate() {
+        let mut rkfw_header = [0u8; RKFW_HEADER_SIZE];
+        fp.seek(std::io::SeekFrom::Start(entry.offset))?;
+        fp.read_exact(&mut rkfw_header)?;
+        let mask = rkfw_storage_mask(&rkfw_header)?;
+        let code = storage_code(mask);
+        let name = code.map(storage_name).unwrap_or("unknown");
+        let output_name = format!("firmware-{index:02}-{name}.img");
+
+        match code {
+            Some(code) => println!(
+                "image {index}: offset={:#x}, size={:#x}, storage={name} (mask={mask:#010x}, code={code})",
+                entry.offset, entry.size
+            ),
+            None => println!(
+                "image {index}: offset={:#x}, size={:#x}, storage=unknown (invalid mask={mask:#010x})",
+                entry.offset, entry.size
+            ),
+        }
+
+        writeln!(
+            manifest,
+            "{index},{:#x},{:#x},{mask:#010x},{},{}",
+            entry.offset,
+            entry.size,
+            code.map(|value| value.to_string())
+                .unwrap_or_else(|| "invalid".to_string()),
+            output_name
+        )?;
+        extract_file(
+            &mut fp,
+            entry.offset,
+            entry.size,
+            &format!("{dst_path}/{output_name}"),
+        )?;
+    }
+
+    println!("SSFW manifest saved to: {dst_path}/ssfw-manifest.txt");
     Ok(())
 }
 

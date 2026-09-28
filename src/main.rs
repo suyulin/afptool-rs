@@ -14,7 +14,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Unpack {
-        #[arg(help = "Path to the firmware file (RKFW or RKAF format)")]
+        #[arg(help = "Path to the firmware file (SSFW, RKFW, or RKAF format)")]
         input: String,
 
         #[arg(help = "Directory where extracted files will be saved")]

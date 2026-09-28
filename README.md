@@ -1,10 +1,10 @@
 # afptool-rs
 
-A Rust tool for unpacking and packing RockChip firmware images (RKFW and RKAF formats).
+A Rust tool for unpacking RockChip SSFW/RKFW/RKAF firmware images and packing RKFW/RKAF images.
 
 ## Features
 
-- Unpack RKFW firmware files
+- Unpack multi-storage SSFW and RKFW firmware files
 - Extract embedded RKAF update images
 - Pack RKFW/RKAF files
 - Support for various RockChip chip families (RK29xx, RK30xx, RK31xx, RK32xx, RK3368, RK3326, RK3566, RK3562, PX30)
@@ -40,6 +40,22 @@ Releases are automatically created when you push a version tag (e.g., `v1.0.0`).
 ```bash
 afptool-rs unpack <input_file> <output_directory>
 ```
+
+**Unpack an SSFW multi-storage image:**
+```bash
+$ afptool-rs unpack update_spi_nvme.img ./out
+SSFW signature detected
+version: 0x00000010
+merge version: 0x02000000
+images: 2
+image 0: offset=0x60, size=0x4dd24a, storage=spinor (mask=0x00000200, code=9)
+image 1: offset=0x4dd2aa, size=0x71d4f24a, storage=pcie (mask=0x00000800, code=11)
+```
+
+Each embedded RKFW image is saved as `firmware-<index>-<storage>.img`.
+`ssfw-manifest.txt` records its original offset, size, storage mask, and
+RockUSB storage selector. The library also exposes `SsfwImage`, which parses
+memory-mapped SSFW data without copying the embedded images.
 
 **Unpack RKFW firmware:**
 ```bash
@@ -151,6 +167,7 @@ Successfully packed RKAF image:
 
 ## Supported Formats
 
+- **SSFW**: RockChip multi-storage firmware container created by `rkImageMaker -merge`
 - **RKFW**: RockChip firmware wrapper format
 - **RKAF**: RockChip Android firmware package format
 

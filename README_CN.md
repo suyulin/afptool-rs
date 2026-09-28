@@ -1,10 +1,10 @@
 # afptool-rs
 
-一个用于解包瑞芯微固件映像文件（RKFW 和 RKAF 格式）的 Rust 工具。
+一个用于解包瑞芯微 SSFW/RKFW/RKAF 固件映像，并打包 RKFW/RKAF 映像的 Rust 工具。
 
 ## 功能特性
 
-- 解包 RKFW 固件文件
+- 解包多存储 SSFW 和 RKFW 固件文件
 - 提取嵌入式 RKAF 更新映像
 - 支持多种瑞芯微芯片系列（RK29xx、RK30xx、RK31xx、RK32xx、RK3368、RK3326、RK3566、PX30）
 - 跨平台支持（Windows、macOS、Linux）
@@ -35,10 +35,25 @@ cargo build --release
 ## 使用方法
 
 ```bash
-afptool-rs <输入文件> <输出目录>
+afptool-rs unpack <输入文件> <输出目录>
 ```
 
 ### 示例
+
+**解包 SSFW 多存储固件：**
+```bash
+$ afptool-rs unpack update_spi_nvme.img ./out
+SSFW signature detected
+version: 0x00000010
+merge version: 0x02000000
+images: 2
+image 0: offset=0x60, size=0x4dd24a, storage=spinor (mask=0x00000200, code=9)
+image 1: offset=0x4dd2aa, size=0x71d4f24a, storage=pcie (mask=0x00000800, code=11)
+```
+
+每个内嵌 RKFW 会保存为 `firmware-<序号>-<存储类型>.img`，
+`ssfw-manifest.txt` 记录原始偏移、长度、存储掩码和 RockUSB 存储选择码。
+库 API 还提供 `SsfwImage`，可直接零拷贝解析内存映射的 SSFW 文件。
 
 **解包 RKFW 固件：**
 ```bash
@@ -70,6 +85,7 @@ model: RK3326
 
 ## 支持的格式
 
+- **SSFW**：由 `rkImageMaker -merge` 生成的瑞芯微多存储固件容器
 - **RKFW**：瑞芯微固件包装格式
 - **RKAF**：瑞芯微 Android 固件包格式
 
